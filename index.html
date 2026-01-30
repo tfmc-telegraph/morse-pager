@@ -3,37 +3,128 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Morse Pager</title>
-    <script src="https://js.pusher.com/8.0/pusher.min.js"></script>
+    <title>Permanent Morse Pager</title>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="https://cdn.ably.com/lib/ably.min-1.js"></script>
     <style>
-        body { background: #0f0f0f; color: #00ff41; font-family: 'Courier New', monospace; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; }
-        #flash-screen { width: 300px; height: 150px; border: 2px solid #00ff41; margin-bottom: 20px; transition: background 0.05s; }
-        .active { background: #00ff41 !important; box-shadow: 0 0 50px #00ff41; }
-        #output-text { font-size: 2.5rem; min-height: 1.5em; text-shadow: 0 0 10px #00ff41; margin-bottom: 30px; }
-        .ui-box { background: #1a1a1a; padding: 20px; border-radius: 8px; border: 1px solid #333; text-align: center; }
-        input { padding: 12px; font-size: 1rem; background: #000; color: #00ff41; border: 1px solid #00ff41; margin: 5px; width: 200px; }
-        button { padding: 12px 24px; font-size: 1rem; cursor: pointer; background: #00ff41; color: #000; border: none; font-weight: bold; transition: 0.2s; }
-        button:hover { background: #00cc33; }
-        .status { font-size: 0.8rem; color: #888; margin-top: 10px; }
+        body { background: #000; color: #0f0; font-family: monospace; text-align: center; padding: 50px; }
+        #flash { width: 100%; height: 100px; border: 2px solid #0f0; margin: 20px 0; transition: 0.05s; }
+        .active { background: #0f0; box-shadow: 0 0 30px #0f0; }
+        .box { border: 1px solid #333; padding: 20px; display: inline-block; background: #111; }
+        input { background: #000; color: #0f0; border: 1px solid #0f0; padding: 10px; margin: 5px; }
+        button { background: #0f0; color: #000; border: none; padding: 10px 20px; font-weight: bold; cursor: pointer; }
     </style>
 </head>
 <body>
 
-    <div id="login-screen" class="ui-box">
-        <h2>REGISTER PAGER</h2>
-        <input type="text" id="myNumber" placeholder="Enter Your Number (e.g. 555)">
-        <button onclick="initConnection()">GO ONLINE</button>
+    <div id="auth-ui" class="box">
+        <h2>PAGER REGISTRATION</h2>
+        <input type="email" id="email" placeholder="Email">
+        <input type="password" id="password" placeholder="Password">
+        <br>
+        <button onclick="handleAuth('login')">LOGIN</button>
+        <button onclick="handleAuth('signup')">SIGN UP</button>
     </div>
 
-    <div id="pager-screen" class="ui-box" style="display:none;">
-        <div id="flash-screen"></div>
-        <div id="output-text"></div>
-        <input type="text" id="targetNumber" placeholder="Recipient Number">
-        <input type="text" id="messageInput" placeholder="Message">
-        <button onclick="sendMessage()">SEND SIGNAL</button>
-        <div class="status" id="statusMsg">Online as: --</div>
+    <div id="pager-ui" class="box" style="display:none;">
+        <h3 id="my-num-display">My Pager #: --</h3>
+        <div id="flash"></div>
+        <div id="output" style="font-size: 2rem; min-height: 1.5em;"></div>
+        <input type="text" id="target" placeholder="Recipient #">
+        <input type="text" id="msg" placeholder="Message">
+        <button onclick="sendSignal()">TRANSMIT</button>
     </div>
 
-    <script src="app.js"></script>
+    <script>
+        // CONFIG - Replace with your keys
+        const sbUrl = 'YOUR_SUPABASE_URL';
+        const sbKey = 'YOUR_SUPABASE_ANON_KEY';
+        const ablyKey = 'YOUR_ABLY_PUBLIC_KEY'; 
+
+        const supabase = supabase.createClient(sbUrl, sbKey);
+        const ably = new Ably.Realtime(ablyKey);
+        let myPhoneNumber = null;
+
+        async function handleAuth(type) {
+            const email = document.getElementById('email').value;
+            const password = document.getElementById('password').value;
+
+            if (type === 'signup') {
+                const { data } = await supabase.auth.signUp({ email, password });
+                if (data.user) {
+                    const randomNum = Math.floor(100000 + Math.random() * 900000).toString();
+                    await supabase.from('profiles').insert([{ id: data.user.id, phone_number: randomNum }]);
+                    alert("Assigned Pager #: " + randomNum);
+                }
+            } else {
+                await supabase.auth.signInWithPassword({ email, password });
+            }
+            checkUser();
+        }
+
+        async function checkUser() {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (user) {
+                const { data } = await supabase.from('profiles').select('phone_number').single();
+                myPhoneNumber = data.phone_number;
+                startPager();
+            }
+        }
+
+        function startPager() {
+            document.getElementById('auth-ui').style.display = 'none';
+            document.getElementById('pager-ui').style.display = 'block';
+            document.getElementById('my-num-display').innerText = "My Pager #: " + myPhoneNumber;
+
+            const channel = ably.channels.get(`channel-${myPhoneNumber}`);
+            channel.subscribe('new-morse', (m) => playMorse(m.data.text.toUpperCase()));
+        }
+
+        async function sendSignal() {
+            const to = document.getElementById('target').value;
+            const text = document.getElementById('msg').value;
+            // Point this to your Vercel URL
+            await fetch('https://your-project.vercel.app/api/send', {
+                method: 'POST',
+                body: JSON.stringify({ to: `channel-${to}`, message: text })
+            });
+        }
+
+        // --- MORSE LOGIC ---
+        const MORSE = {'A': '.-', 'B': '-...', 'C': '-.-.', 'D': '-..', 'E': '.', 'F': '..-.', 'G': '--.', 'H': '....', 'I': '..', 'J': '.---', 'K': '-.-', 'L': '.-..', 'M': '--', 'N': '-.', 'O': '---', 'P': '.--.', 'Q': '--.-', 'R': '.-.', 'S': '...', 'T': '-', 'U': '..-', 'V': '...-', 'W': '.--', 'X': '-..-', 'Y': '-.--', 'Z': '--..', ' ': '/'};
+        const UNIT = 120;
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+        async function playMorse(text) {
+            const out = document.getElementById('output');
+            out.innerText = "";
+            for (let char of text) {
+                const code = MORSE[char];
+                if (code === '/') await new Promise(r => setTimeout(r, UNIT * 4));
+                else if (code) {
+                    for (let s of code) {
+                        const d = s === '.' ? UNIT : UNIT * 3;
+                        beep(d);
+                        document.getElementById('flash').classList.add('active');
+                        await new Promise(r => setTimeout(r, d));
+                        document.getElementById('flash').classList.remove('active');
+                        await new Promise(r => setTimeout(r, UNIT));
+                    }
+                }
+                out.innerText += char;
+                await new Promise(r => setTimeout(r, UNIT * 3));
+            }
+        }
+
+        function beep(d) {
+            const o = audioCtx.createOscillator();
+            const g = audioCtx.createGain();
+            o.connect(g); g.connect(audioCtx.destination);
+            o.start(); g.gain.exponentialRampToValueAtTime(0.00001, audioCtx.currentTime + d/1000);
+            o.stop(audioCtx.currentTime + d/1000);
+        }
+
+        checkUser(); // Check if already logged in on load
+    </script>
 </body>
 </html>
